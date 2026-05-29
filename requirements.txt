@@ -1,4 +1,4 @@
-torch>=2.0
+torch>=2.7
 datasets>=2.14
 transformers>=4.35
 tokenizers>=0.14

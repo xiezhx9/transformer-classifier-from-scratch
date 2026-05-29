@@ -3,16 +3,20 @@
 约定学生实现见同目录 ../README.md「实现约定」一节。
 本脚本运行后会输出每项测试结果，并把结果写入 eval/result.json，可附在提交里。
 """
-import json
 import sys
-import traceback
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 
-ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))           # from src.* —— 学生实现
+sys.path.insert(0, str(ROOT.parent))    # from _eval_harness —— 共用运行壳
+
+from _eval_harness import run_tests
+
+ACC_PASS = 0.80       # 文本分类准确率通过线
+ACC_BASELINE = 0.85   # 参考基线，仅供对照、不参与判定
 
 
 def test_attention_correctness():
@@ -97,34 +101,12 @@ def test_classifier_accuracy():
     acc = correct / total
     return {
         "test": "classifier_accuracy",
-        "pass": acc >= 0.80,
+        "pass": acc >= ACC_PASS,
         "accuracy": round(acc, 4),
-        "baseline_reference": 0.85,
+        "baseline_reference": ACC_BASELINE,
     }
 
 
-def main():
-    results = []
-    for fn in [test_attention_correctness, test_causal_mask, test_classifier_accuracy]:
-        try:
-            r = fn()
-        except Exception as e:
-            r = {"test": fn.__name__.replace("test_", ""),
-                 "pass": False, "error": str(e),
-                 "trace": traceback.format_exc().splitlines()[-3:]}
-        results.append(r)
-        if r.get("pass") is True:
-            tag = "[通过]"
-        elif r.get("pass") is None:
-            tag = "[跳过]"
-        else:
-            tag = "[失败]"
-        print(f"{tag} {r['test']}: {json.dumps(r, ensure_ascii=False)}")
-
-    out = ROOT / "eval" / "result.json"
-    out.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\n结果写入 {out.relative_to(ROOT)}，可附在 nndl-discussion 提交里。")
-
-
 if __name__ == "__main__":
-    main()
+    run_tests([test_attention_correctness, test_causal_mask,
+               test_classifier_accuracy], ROOT)

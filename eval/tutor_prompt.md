@@ -75,4 +75,4 @@
 
 ## 我的代码
 
-[在此粘贴你的 src/ 下相关代码，至少包括 attention.py 和 model.py；如有篇幅限制，优先贴 attention.py 和 block.py]
+[在此粘贴你的 src/ 下相关代码，至少包括 src/attention.py 和 src/model.py（若把 encoder block 单独拆成 block.py，也一并贴）]
