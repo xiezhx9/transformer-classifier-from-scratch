@@ -11,7 +11,6 @@ import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))           # from src.* —— 学生实现
-sys.path.insert(0, str(ROOT.parent))    # from _eval_harness —— 共用运行壳
 
 from _eval_harness import run_tests
 

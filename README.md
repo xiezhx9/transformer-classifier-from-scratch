@@ -1,183 +1,204 @@
-# 任务一：熟悉 Transformer
+# Transformer Classifier from Scratch
 
-> 主大纲见仓库根 [README](../README.md)；本目录是该任务的资源、自检与提交入口。
+用 PyTorch 手写 scaled dot-product attention、多头自注意力和 Transformer Encoder，
+在 ChnSentiCorp 中文情感二分类上完成训练、评估、梯度监控与注意力演化可视化。
 
-## 一句话目标
+本项目来自
+[`llm-beginner/task-1-transformer`](https://github.com/xiezhx9/llm-beginner/tree/master/task-1-transformer)，
+拆分时保留了 Task 1 的 Git 历史，并补齐了独立运行所需的自检 harness。
 
-用约 300 行 PyTorch 从零写一个 Transformer encoder，在 ChnSentiCorp 中文情感二分类上做到 dev 准确率 ≥ 0.80（参考基线约 0.85），并能用注意力热图说清楚模型「在看什么」。
+## 项目结果
 
-## 任务情境
+| 验收项 | 结果 | 通过标准 |
+|---|---:|---:|
+| Attention 最大绝对误差 | `7.15e-7` | `< 1e-5` |
+| Causal mask 未来信息泄漏 | `0` | `< 1e-6` |
+| ChnSentiCorp dev accuracy | **`0.845`** | `>= 0.80` |
 
-假装你刚入职某 NLP 团队，组长让你「先把 Transformer 自己撸一遍」。规则：
+模型训练时还记录了 loss、裁剪前全局梯度范数，以及固定探针句中每个 attention
+head 随 epoch 的变化。
 
-- 不许调 `nn.MultiheadAttention` 或任何高层封装
-- 不许加载预训练模型
-- 两周后周会要汇报：dev 准确率 + 几张注意力热图 + 你对 mask、residual、LayerNorm 的理解
+![多头注意力演化](artifacts/attention_evolution_run/attention_evolution_all_heads.png)
 
-这就是本任务。
+## 实现内容
 
-## 输入 / 输出
+- 不使用 `nn.MultiheadAttention`，手写 Q/K/V 投影、分头、mask、softmax 与合并。
+- 手写 Transformer Encoder Block：Pre-LN attention、FFN、residual、dropout。
+- 使用中文 BERT tokenizer 的词表和分词规则，但 Embedding 与 Transformer 权重均随机初始化，
+  **没有加载预训练 BERT 权重**。
+- 使用 sinusoidal positional encoding 注入绝对位置信息。
+- 使用 padding-aware mean pooling 汇总句子，避免 PAD token 污染分类向量。
+- 支持返回真实 softmax attention weights，用于热图和训练过程可视化。
+- 实现 AdamW 训练、梯度裁剪、验证集评估和最佳 checkpoint 保存。
 
-| | 内容 |
-|---|---|
-| **给你** | ChnSentiCorp 数据（HF 自动拉，约 9.6K 训练样本，二分类）/ PyTorch 2.7+ / 单卡 8GB GPU（CPU 也能跑但慢 ~10×） |
-| **交付** | 1. `ckpt/best.pt`（训练好的模型，预期 5–50 MB） 2. `figures/` 下 ≥ 3 张注意力热图 3. `eval/result.json`（自检结果） 4. 一段 200–500 字的实验观察文字 |
+## 模型结构
 
-## Definition of Done
+```mermaid
+flowchart LR
+    A[Chinese text] --> B[BERT tokenizer]
+    B --> C[Token IDs B x T]
+    C --> D[Trainable Embedding]
+    D --> E[Sinusoidal PE]
+    E --> F[N x Transformer Encoder Block]
+    F --> G[Final LayerNorm]
+    G --> H[Masked Mean Pooling]
+    H --> I[Linear Classifier]
+    I --> J[Positive / Negative]
+```
 
-必做 5 项，缺一不算完成：
+默认模型配置：
 
-- [ ] **M1** 手写 `scaled_dot_product_attention`，自检 `attention_correctness` 通过（与官方实现误差 < 1e-5）
-- [ ] **M2** 手写 `MultiHeadAttention` + `TransformerBlock`，前向不报错且形状对
-- [ ] **M3** 在 ChnSentiCorp 上训练分类器，dev 准确率 ≥ 0.80（参考基线 ~0.85）
-- [ ] **M4** 改一遍代码加 causal mask 跑 toy 语言模型，自检 `causal_mask` 通过（未来词元不泄漏）
-- [ ] **M5** 输出 ≥ 3 张注意力热图（建议：1 正面样本、1 负面样本、1 长句样本）
+```text
+d_model=64
+n_heads=4
+n_layers=2
+ff_dim=128
+dropout=0.1
+max_len=64
+num_classes=2
+```
 
-加分（任选）：
+## 核心公式
 
-- [ ] **S1** head 数 / 层数消融（≥ 3 组配置 + 准确率表）
-- [ ] **S2** 拆掉 residual 或 LayerNorm，记录训练是否还能收敛
-- [ ] **S3** dev 准确率 > 0.88（强结果）
-- [ ] **S4** 把绝对 PE 换成 RoPE 对比
+Scaled dot-product attention：
 
-## 实施步骤（建议节奏：2 周）
+$$
+\operatorname{Attention}(Q,K,V)
+=\operatorname{softmax}\left(
+\frac{QK^T}{\sqrt{d_k}}+M
+\right)V.
+$$
 
-### 第 1-3 天：环境 + 数据
+其中被屏蔽位置在 $M$ 中填入极小值，使 softmax 后权重接近 0。
+
+Pre-LN Encoder Block：
+
+$$
+X'=X+\operatorname{MHA}(\operatorname{LN}(X)),
+$$
+
+$$
+Y=X'+\operatorname{FFN}(\operatorname{LN}(X')).
+$$
+
+Padding-aware mean pooling：
+
+$$
+h=\frac{\sum_t m_tH_t}{\max(1,\sum_t m_t)}.
+$$
+
+## 代码中的关键技巧
+
+### 1. Mask 使用 `masked_fill`，不能直接乘 0
+
+```python
+scores = scores.masked_fill(mask, torch.finfo(scores.dtype).min)
+weights = torch.softmax(scores, dim=-1)
+```
+
+若只把被屏蔽 score 乘 0，softmax 后该位置仍会获得正概率。项目约定
+`mask=True` 表示不可见，并允许 mask 广播到 `[B, H, Tq, Tk]`。
+
+### 2. 多头拆分后交换维度
+
+```python
+q = q.reshape(B, T, H, head_dim).transpose(1, 2)
+# [B, T, H, Dh] -> [B, H, T, Dh]
+```
+
+把 head 放在 token 维前面，才能让矩阵乘法自然得到每个 head 的
+`[Tq, Tk]` attention score。合并时先 transpose 回去，再调用
+`.contiguous().reshape(B, T, D)`，避免非连续内存上的 `view` 问题。
+
+### 3. Padding 同时影响 attention 和 pooling
+
+Padding key 必须在 attention score 中屏蔽；最终 mean pooling 也必须只对真实 token
+求和。仅做其中一步仍会让 PAD 影响句子表示。
+
+### 4. 可视化使用模型真实权重
+
+`get_attention_weights()` 复用指定 Encoder 层的实际 LayerNorm、Q/K/V 和 mask，
+而不是训练后重新构造一套近似 attention。固定 probe sentence 和 query token 后，
+逐 epoch 保存多头权重，才能比较注意力随训练发生的变化。
+
+### 5. 梯度裁剪记录的是裁剪前 norm
+
+```python
+grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+```
+
+返回值是裁剪前的全局 L2 norm，可用于发现梯度 spike；裁剪统一缩放所有梯度，
+不会改变整体方向。
+
+## 快速开始
+
+推荐 Python 3.11。
 
 ```bash
+git clone https://github.com/xiezhx9/transformer-classifier-from-scratch.git
+cd transformer-classifier-from-scratch
+
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-python data/download.py
 ```
 
-跑完应看到 `data/{train,validation,test}.parquet` 三个文件。
-
-### 第 4-6 天：手写 attention（M1 + M2）
-
-**输入**：随机张量 Q/K/V，形状 `(B, H, T, D)`
-**输出**：`src/attention.py` 完整，能通过 `python eval/run.py` 的前两项自检
-
-实现内容：
-
-1. `scaled_dot_product_attention(Q, K, V, mask=None)` —— 缩放点积 + mask + softmax + 加权求和
-2. `class MultiHeadAttention(nn.Module)` —— 拼分 head、Q/K/V 投影、输出投影
-
-**常见坑**：
-
-- mask 用乘 0 而不是填 `-inf`：softmax 后还有概率泄漏
-- 缩放因子写成 `sqrt(d_model)` 而不是 `sqrt(d_k)`
-- multi-head reshape 忘加 `.contiguous()` 导致 view 报错
-
-### 第 7-9 天：搭模型 + 训练（M3）
-
-**输入**：ChnSentiCorp 训练集
-**输出**：`ckpt/best.pt`、训练 loss 曲线
-
-实现内容：
-
-1. `src/block.py`：`TransformerBlock` = attention + FFN + 两个 residual + 两个 LayerNorm
-2. `src/model.py`：`TransformerClassifier` 堆 N 层 block + pooling（[CLS] 位或 mean）+ 分类 head
-3. `train.py`：AdamW、cosine LR schedule、padding mask、early stopping by dev acc
-
-**建议超参起点**（不要照搬，做实验）：d_model=128, n_heads=4, n_layers=4, lr=3e-4, batch=32, epochs=5
-
-**常见坑**：
-
-- 忘加 padding mask 导致 PAD token 参与了 attention
-- pooling 用 mean 时没排除 padding 位置
-- 验证集准确率震荡：lr 太大 / batch 太小 / 没 warmup
-
-### 第 10-11 天：causal mask + toy 语言模型（M4）
-
-**输入**：任意小段文本（可复用唐诗或自己造）
-**输出**：自检 `causal_mask` 通过
-
-把同一个 attention 加上 causal mask（上三角 `-inf`），跑一个 toy 语言模型（next-token prediction），验证未来位置 V 改动不影响过去输出。这一步是任务二的预热。
-
-### 第 12-14 天：注意力可视化 + 写报告（M5）
-
-**输入**：训练好的模型 + 几个测试句子
-**输出**：`figures/` 下 ≥ 3 张热图 + 报告文字
-
-用 matplotlib 画 attention weights：选一个 head、一个 layer，把 `(T, T)` 矩阵用 imshow 画出来，x/y 轴标词元。在情感正/负样本上对比：模型是否真的在看「不错」「失望」这类词？
-
-## 实现约定
-
-`eval/run.py` 会自动检测以下接口；接口对上就能跑自检：
-
-| 文件 | 必须导出 |
-|---|---|
-| `src/attention.py` | `scaled_dot_product_attention(Q, K, V, mask=None)` —— Q/K/V 形状 `(B, H, T, D)`；`mask` 形状广播到此，`True` = 被屏蔽 |
-| `src/model.py` | `class TransformerClassifier` + `load_for_eval(ckpt_path: str) -> (model, tokenize_fn)` 工厂函数；自检按此契约调用：`tokenize_fn(text: str) -> LongTensor 形状 (T,)`、`model(ids)` 接受形状 `(B, T)` 的 id 张量并返回形状 `(B, num_classes)` 的 logits |
-| `ckpt/best.pt` | 训练好的 state_dict |
-
-接口可以改，但改了请同步调整 `eval/run.py`。
-
-## 自检
-
-```bash
-python eval/run.py
-```
-
-| 测试 | 通过标准 | 对应 DoD |
-|---|---|---|
-| `attention_correctness` | 与 `F.scaled_dot_product_attention` 误差 < 1e-5 | M1 |
-| `causal_mask` | 未来词元的 V 改动后，过去位置输出不变 | M4 |
-| `classifier_accuracy` | dev set 准确率 ≥ 0.80 | M3 |
-
-结果写入 `eval/result.json`，提交时附上。
-
-## AI Tutor 反馈
-
-把 [eval/tutor_prompt.md](eval/tutor_prompt.md) 整段贴给 Claude / Qwen / DeepSeek，连同你的代码。模型会按统一格式（必检 / 加分 / 优先级）给你针对性 review。
-
-## 前置阅读（非必需）
-
-- [Attention Is All You Need](https://arxiv.org/abs/1706.03762)
-- [The Annotated Transformer](http://nlp.seas.harvard.edu/annotated-transformer/)
-- [The Illustrated Transformer](https://jalammar.github.io/illustrated-transformer/)
-- NNDL2 第 8 章「注意力机制」「自注意力」「Transformer 模型」三节
-- 实践书 v2《注意力机制》章
-
-## 本次实现与运行
-
-实现代码位于 `src/`，包含手写 scaled dot-product attention、多头注意力、
-Transformer encoder block、中文情感分类器，以及训练过程可视化。
+下载数据：
 
 ```bash
 python data/download.py
+```
+
+训练：
+
+```bash
 python -m src.train
+```
+
+自检：
+
+```bash
 python eval/run.py
 ```
 
-训练脚本会记录训练/验证损失、裁剪前的全局梯度范数，并针对固定探针句
-逐 epoch 采集指定 Query token 的多头注意力。正式训练结果位于
-[`artifacts/attention_evolution_run`](artifacts/attention_evolution_run)：
+`ckpt/` 和下载后的数据不会提交 Git。Fresh clone 可以直接运行 attention 与 causal
+mask 数值自检；分类准确率测试需要先训练得到 `ckpt/best.pt`。
 
-- [`loss_curve.png`](artifacts/attention_evolution_run/loss_curve.png)
-- [`gradient_norm.png`](artifacts/attention_evolution_run/gradient_norm.png)
-- [`attention_heatmap.png`](artifacts/attention_evolution_run/attention_heatmap.png)
-- [`attention_evolution.png`](artifacts/attention_evolution_run/attention_evolution.png)
-- [`attention_evolution_all_heads.png`](artifacts/attention_evolution_run/attention_evolution_all_heads.png)
-- [`attention_evolution.gif`](artifacts/attention_evolution_run/attention_evolution.gif)
+## 仓库结构
 
-本地自检结果：attention 最大误差 `7.15e-7`，causal mask 泄漏误差 `0`，
-验证集分类准确率约 `0.845`。
+```text
+.
+├── artifacts/                # 已提交的训练曲线与注意力可视化
+├── data/download.py          # ChnSentiCorp 下载脚本
+├── eval/run.py               # attention、causal mask、accuracy 自检
+├── notes/                    # Transformer 与工程实现笔记
+├── src/
+│   ├── SinusoidalPE.py
+│   ├── attention.py
+│   ├── block.py
+│   ├── model.py
+│   └── train.py
+├── _eval_harness.py
+└── requirements.txt
+```
 
-学习笔记：
+## 结果文件
 
-- [`notes/Chapter8-注意力机制与Transformer.md`](notes/Chapter8-注意力机制与Transformer.md)
-- [`notes/Task1-Transformer分类器实现与工程技巧.md`](notes/Task1-Transformer分类器实现与工程技巧.md)
+- [Loss 曲线](artifacts/attention_evolution_run/loss_curve.png)
+- [Gradient norm](artifacts/attention_evolution_run/gradient_norm.png)
+- [单次 attention heatmap](artifacts/attention_evolution_run/attention_heatmap.png)
+- [Attention evolution](artifacts/attention_evolution_run/attention_evolution.png)
+- [All-head evolution](artifacts/attention_evolution_run/attention_evolution_all_heads.png)
+- [Attention evolution GIF](artifacts/attention_evolution_run/attention_evolution.gif)
 
-## 提交
+## 局限与后续工作
 
-到 [nndl-discussion](https://github.com/nndl/nndl-discussion/discussions) 「llm-beginner 实践成果」分类发帖，附：
+- 当前结果来自单一默认配置，没有完成 head/layer 数量的系统消融。
+- 使用 tokenizer 词表不等于使用预训练语义；Embedding 从随机初始化开始学习。
+- Attention heatmap 能帮助解释信息流，但不能单独证明模型的因果决策依据。
+- 可继续对比 `[CLS]` pooling、masked mean pooling 和 attention pooling。
+- 可将 sinusoidal PE 替换为 RoPE，并比较长序列外推和分类效果。
 
-1. 你的 fork 仓库链接
-2. `eval/result.json` 内容（贴文本即可）
-3. DoD checklist 勾选状态
-4. ≥ 3 张注意力热图
-5. 200-500 字实验观察：你做了哪些消融、看到了什么有意思的现象
+## License
 
-## 时间
-
-约 2 周。如果在 M3（训练）卡住超过 3 天，建议把模型缩到 d_model=64 / n_layers=2 先跑通，再回头调参。
+本项目沿用原仓库许可证，见 [LICENSE](LICENSE)。
