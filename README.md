@@ -63,8 +63,8 @@ num_classes=2
 Scaled dot-product attention：
 
 $$
-\operatorname{Attention}(Q,K,V)
-=\operatorname{softmax}\left(
+\mathrm{Attention}(Q,K,V)
+=\mathrm{softmax}\left(
 \frac{QK^T}{\sqrt{d_k}}+M
 \right)V.
 $$
@@ -74,11 +74,11 @@ $$
 Pre-LN Encoder Block：
 
 $$
-X'=X+\operatorname{MHA}(\operatorname{LN}(X)),
+X'=X+\mathrm{MHA}(\mathrm{LN}(X)),
 $$
 
 $$
-Y=X'+\operatorname{FFN}(\operatorname{LN}(X')).
+Y=X'+\mathrm{FFN}(\mathrm{LN}(X')).
 $$
 
 Padding-aware mean pooling：
